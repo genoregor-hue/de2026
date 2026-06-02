@@ -12,11 +12,13 @@ ip addr flush dev "$IF_EXT" 2>/dev/null
 ip addr add "$BR_ISP_IP/$BR_ISP_PFX" dev "$IF_EXT"; ip link set "$IF_EXT" up
 ip route replace default via "$ISP_BR_IP" 2>/dev/null
 ok "BR-RTR->ISP $BR_ISP_IP/$BR_ISP_PFX"
+etcnet_eth_static "$IF_EXT" "$BR_ISP_IP/$BR_ISP_PFX" "$ISP_BR_IP"
 
 # LAN в сторону BR-SRV (не более 16 адресов → /28)
 ip addr flush dev "$IF_INT" 2>/dev/null
 ip addr add "$BR_RTR_LAN/$BR_PFX" dev "$IF_INT"; ip link set "$IF_INT" up
 ok "BR-LAN $BR_RTR_LAN/$BR_PFX ($IF_INT)"
+etcnet_eth_static "$IF_INT" "$BR_RTR_LAN/$BR_PFX"
 
 enable_forward
 
@@ -32,6 +34,8 @@ ip tunnel add tun1 mode "$TUN_TYPE" local "$BR_ISP_IP" remote "$HQ_ISP_IP"
 ip addr add "$TUN_BR_IP/$TUN_PFX" dev tun1
 ip link set tun1 up
 ok "Туннель ($TUN_TYPE) tun1 $TUN_BR_IP/$TUN_PFX -> $TUN_HQ_IP"
+etcnet_tunnel tun1 "$TUN_TYPE" "$BR_ISP_IP" "$HQ_ISP_IP" "$TUN_BR_IP/$TUN_PFX" "$IF_EXT"
+etcnet_enable
 
 # OSPF только на туннеле + пароль
 pkg frr

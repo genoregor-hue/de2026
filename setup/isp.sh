@@ -18,6 +18,12 @@ ip addr flush dev "$IF_INT2" 2>/dev/null
 ip addr add "$ISP_BR_IP/$ISP_BR_PFX" dev "$IF_INT2"; ip link set "$IF_INT2" up
 ok "ISP->HQ $ISP_HQ_IP/$ISP_HQ_PFX ($IF_INT), ISP->BR $ISP_BR_IP/$ISP_BR_PFX ($IF_INT2)"
 
+# etcnet — постоянство
+[ "$ISP_UPLINK_DHCP" = 1 ] && etcnet_eth_dhcp "$IF_EXT"
+etcnet_eth_static "$IF_INT"  "$ISP_HQ_IP/$ISP_HQ_PFX"
+etcnet_eth_static "$IF_INT2" "$ISP_BR_IP/$ISP_BR_PFX"
+etcnet_enable
+
 enable_forward
 
 # Задача 2/8: динамический NAT (маскарад) в сторону интернета

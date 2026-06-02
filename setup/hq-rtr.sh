@@ -14,6 +14,8 @@ ip addr flush dev "$IF_EXT" 2>/dev/null
 ip addr add "$HQ_ISP_IP/$HQ_ISP_PFX" dev "$IF_EXT"; ip link set "$IF_EXT" up
 ip route replace default via "$ISP_HQ_IP" 2>/dev/null
 ok "HQ-RTR->ISP $HQ_ISP_IP/$HQ_ISP_PFX"
+etcnet_eth_static "$IF_EXT" "$HQ_ISP_IP/$HQ_ISP_PFX" "$ISP_HQ_IP"
+etcnet_eth_trunk "$IF_INT"
 
 enable_forward
 
@@ -26,6 +28,7 @@ for v in "$VL100_ID:$VL100_RTR:$VL100_PFX" "$VL200_ID:$VL200_RTR:$VL200_PFX" "$V
   ip link add link "$IF_INT" name "$IF_INT.$id" type vlan id "$id"
   ip addr add "$rtr/$pfx" dev "$IF_INT.$id"
   ip link set "$IF_INT.$id" up
+  etcnet_vlan "$IF_INT" "$id" "$rtr/$pfx"
   ok "VLAN $id -> $rtr/$pfx ($IF_INT.$id)"
 done
 
@@ -41,6 +44,8 @@ ip tunnel add tun1 mode "$TUN_TYPE" local "$HQ_ISP_IP" remote "$BR_ISP_IP"
 ip addr add "$TUN_HQ_IP/$TUN_PFX" dev tun1
 ip link set tun1 up
 ok "Туннель ($TUN_TYPE) tun1 $TUN_HQ_IP/$TUN_PFX -> $TUN_BR_IP"
+etcnet_tunnel tun1 "$TUN_TYPE" "$HQ_ISP_IP" "$BR_ISP_IP" "$TUN_HQ_IP/$TUN_PFX" "$IF_EXT"
+etcnet_enable
 
 # Задача 7: OSPF (FRR) только на туннеле + парольная защита
 pkg frr

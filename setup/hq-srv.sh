@@ -11,6 +11,8 @@ ip addr flush dev "$IF_INT" 2>/dev/null
 ip addr add "$HQ_SRV_IP/$VL100_PFX" dev "$IF_INT"; ip link set "$IF_INT" up
 ip route replace default via "$VL100_RTR" 2>/dev/null
 ok "HQ-SRV $HQ_SRV_IP/$VL100_PFX, gw $VL100_RTR"
+etcnet_eth_static "$IF_INT" "$HQ_SRV_IP/$VL100_PFX" "$VL100_RTR"
+etcnet_enable
 
 # Задача 3: sshuser (UID 2026, sudo без пароля)
 make_sudoer "$SSH_USER" "$SSH_UID" "$USER_PASS"

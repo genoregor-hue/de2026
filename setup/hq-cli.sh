@@ -12,6 +12,8 @@ ip link set "$IF_INT" up
 (dhcpcd "$IF_INT" || dhclient "$IF_INT") >/dev/null 2>&1
 sleep 3
 ok "HQ-CLI: запрошен адрес по DHCP на $IF_INT"
+etcnet_eth_dhcp "$IF_INT"
+etcnet_enable
 ip -4 -br addr show "$IF_INT"
 
 set_tz

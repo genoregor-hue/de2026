@@ -11,6 +11,8 @@ ip addr flush dev "$IF_INT" 2>/dev/null
 ip addr add "$BR_SRV_IP/$BR_PFX" dev "$IF_INT"; ip link set "$IF_INT" up
 ip route replace default via "$BR_RTR_LAN" 2>/dev/null
 ok "BR-SRV $BR_SRV_IP/$BR_PFX, gw $BR_RTR_LAN"
+etcnet_eth_static "$IF_INT" "$BR_SRV_IP/$BR_PFX" "$BR_RTR_LAN"
+etcnet_enable
 
 # Задача 3: sshuser (UID 2026, sudo без пароля)
 make_sudoer "$SSH_USER" "$SSH_UID" "$USER_PASS"
