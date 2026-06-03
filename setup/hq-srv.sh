@@ -1,102 +1,156 @@
-#!/usr/bin/env bash
-# ═══ HQ-SRV — Альт Сервер · sshuser, SSH:2026, основной DNS (BIND) ═══
-set -u
-DIR="$(cd "$(dirname "$0")" && pwd)"
-. "$DIR/../config.env"; . "$DIR/lib.sh"; need_root
-
-set_hostname "hq-srv.$DOMAIN"
-
-# Статический IP в VLAN100, шлюз = HQ-RTR
-ip addr flush dev "$IF_INT" 2>/dev/null
-ip addr add "$HQ_SRV_IP/$VL100_PFX" dev "$IF_INT"; ip link set "$IF_INT" up
-ip route replace default via "$VL100_RTR" 2>/dev/null
-ok "HQ-SRV $HQ_SRV_IP/$VL100_PFX, gw $VL100_RTR"
-etcnet_eth_static "$IF_INT" "$HQ_SRV_IP/$VL100_PFX" "$VL100_RTR"
-etcnet_enable
-
-# Задача 3: sshuser (UID 2026, sudo без пароля)
-make_sudoer "$SSH_USER" "$SSH_UID" "$USER_PASS"
-
-# Задача 5: безопасный SSH — порт 2026, только sshuser, 2 попытки, баннер
-SSHD=/etc/openssh/sshd_config; [ -f "$SSHD" ] || SSHD=/etc/ssh/sshd_config
-echo "$SSH_BANNER_TEXT" > /etc/openssh/banner 2>/dev/null || echo "$SSH_BANNER_TEXT" > /etc/ssh/banner
-BANNER_PATH=/etc/openssh/banner; [ -f /etc/ssh/banner ] && BANNER_PATH=/etc/ssh/banner
-sed -i -E '/^#?(Port|AllowUsers|MaxAuthTries|Banner|PermitRootLogin)\b/d' "$SSHD"
-cat >> "$SSHD" <<EOF
-
-# --- Демоэкзамен 2026 ---
-Port $SSH_PORT
-AllowUsers $SSH_USER
-MaxAuthTries 2
-Banner $BANNER_PATH
+#!/bin/bash
+# =============================================================================
+# HQ-SRV Setup Script - ALT Linux | DNS + SSH + Users
+# DEMO-2026 | Session: 3b9ac6ea
+# Generated: 2026-06-02 17:35:11
+# =============================================================================
+set -e
+TZ_REGION="${TZ_REGION:-Europe/Moscow}"   # часовой пояс (Йошкар-Ола). Замени при необходимости.
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
+[[ $EUID -ne 0 ]] && { log_error "Run as root!"; exit 1; }
+echo "=============================================="
+echo "        HQ-SRV Server Configuration"
+echo "=============================================="
+log_step "Setting hostname..."
+hostnamectl set-hostname hq-srv.au-team.irpo
+# VLAN ID 100 назначается в Proxmox (VM → Hardware → Network → VLAN Tag=100)
+mkdir -p /etc/net/ifaces/ens19
+cat > /etc/net/ifaces/ens19/options << 'EOF'
+TYPE=eth
+BOOTPROTO=static
+CONFIG_IPV4=yes
+DISABLED=no
+NM_CONTROLLED=no
+SYSTEMD_CONTROLLED=no
 EOF
-systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null
-ok "SSH: порт $SSH_PORT, только $SSH_USER, MaxAuthTries 2, баннер"
-
-# Задача 10: основной DNS на BIND — прямая и обратная зоны + forwarder
-pkg bind
-NAMEDIR=/var/lib/bind/etc; [ -d /etc/bind ] && NAMEDIR=/etc/bind
-ZONEDIR=/var/lib/bind/zone; mkdir -p "$ZONEDIR"
-# обратная зона из сети VLAN100
-REV_OCT="$(echo "$HQ_SRV_IP" | cut -d. -f3).$(echo "$HQ_SRV_IP" | cut -d. -f2).$(echo "$HQ_SRV_IP" | cut -d. -f1)"
-NET3="$(echo "$HQ_SRV_IP" | cut -d. -f1-3)"
-
-cat > /etc/bind/options.conf 2>/dev/null <<EOF || true
+echo "192.168.100.2/27" > /etc/net/ifaces/ens19/ipv4address
+echo "default via 192.168.100.1" > /etc/net/ifaces/ens19/ipv4route
+systemctl restart network && sleep 2
+cat > /etc/resolv.conf << 'EOF'
+nameserver 77.88.8.8
+EOF
+apt-get update && apt-get install -y bind bind-utils vim tzdata sudo
+timedatectl set-timezone ${TZ_REGION:-Europe/Moscow}
+cat > /var/lib/bind/etc/options.conf << 'EOF'
 options {
-    directory "/var/lib/bind";
+    version "unknown";
+    directory "/etc/bind/zone";
+    dump-file "/var/run/named/named_dump.db";
+    statistics-file "/var/run/named/named.stats";
+    recursing-file "/var/run/named/named.recursing";
+    secroots-file "/var/run/named/named.secroots";
+    pid-file none;
     listen-on { any; };
-    allow-query { any; };
+    listen-on-v6 { none; };
     recursion yes;
-    forwarders { $DNS_FORWARDER_1; $DNS_FORWARDER_2; };
-    forward first;
-    dnssec-validation no;
+    allow-recursion { any; };
+    forwarders { 77.88.8.8; };
+    allow-query { any; };
 };
 EOF
+cat >> /var/lib/bind/etc/rfc1912.conf << 'EOF'
 
-# Подключаем зоны
-cat > /etc/bind/local.conf 2>/dev/null <<EOF || true
-zone "$DOMAIN" {
+zone "au-team.irpo" {
     type master;
-    file "$ZONEDIR/db.$DOMAIN";
+    file "au-team.irpo";
 };
-zone "$REV_OCT.in-addr.arpa" {
+zone "100.168.192.in-addr.arpa" {
     type master;
-    file "$ZONEDIR/db.rev";
+    file "100.168.192.in-addr.arpa";
+};
+zone "200.168.192.in-addr.arpa" {
+    type master;
+    file "200.168.192.in-addr.arpa";
 };
 EOF
-
-# Прямая зона
-cat > "$ZONEDIR/db.$DOMAIN" <<EOF
-\$TTL 3600
-@   IN SOA hq-srv.$DOMAIN. root.$DOMAIN. ( 2026010101 3600 600 86400 3600 )
-@         IN NS  hq-srv.$DOMAIN.
-hq-srv    IN A   $HQ_SRV_IP
-hq-rtr    IN A   $VL100_RTR
-hq-cli    IN A   ${VL200_NET%.*}.2
-br-rtr    IN A   $TUN_BR_IP
-br-srv    IN A   $BR_SRV_IP
-docker    IN A   $BR_SRV_IP
-web       IN A   $BR_SRV_IP
+cp /var/lib/bind/etc/zone/empty /var/lib/bind/etc/zone/au-team.irpo
+cp /var/lib/bind/etc/zone/empty /var/lib/bind/etc/zone/100.168.192.in-addr.arpa
+cp /var/lib/bind/etc/zone/empty /var/lib/bind/etc/zone/200.168.192.in-addr.arpa
+cat > /var/lib/bind/etc/zone/au-team.irpo << 'EOF'
+$TTL    1D
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                        2026060200      ; serial
+                        12H             ; refresh
+                        1H              ; retry
+                        1W              ; expire
+                        1H              ; ncache
+                        )
+        IN      NS      au-team.irpo.
+        IN      A       192.168.100.2
+hq-srv  IN      A       192.168.100.2
+hq-cli  IN      A       192.168.200.2
+hq-rtr  IN      A       192.168.100.1
+hq-rtr  IN      A       192.168.200.1
+hq-rtr  IN      A       192.168.99.1
+docker  IN      A       172.16.1.1
+web     IN      A       172.16.2.1
+br-srv  IN      A       192.168.0.2
+br-rtr  IN      A       192.168.0.1
 EOF
-
-# Обратная зона (для серверов HQ)
-HOST_OCT="$(echo "$HQ_SRV_IP" | cut -d. -f4)"
-RTR_OCT="$(echo "$VL100_RTR" | cut -d. -f4)"
-cat > "$ZONEDIR/db.rev" <<EOF
-\$TTL 3600
-@   IN SOA hq-srv.$DOMAIN. root.$DOMAIN. ( 2026010101 3600 600 86400 3600 )
-@   IN NS  hq-srv.$DOMAIN.
-$HOST_OCT  IN PTR hq-srv.$DOMAIN.
-$RTR_OCT   IN PTR hq-rtr.$DOMAIN.
+cat > /var/lib/bind/etc/zone/100.168.192.in-addr.arpa << 'EOF'
+$TTL    1D
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                        2026060200      ; serial
+                        12H             ; refresh
+                        1H              ; retry
+                        1W              ; expire
+                        1H              ; ncache
+                        )
+        IN      NS      au-team.irpo.
+1       IN      PTR     hq-rtr.au-team.irpo.
+2       IN      PTR     hq-srv.au-team.irpo.
 EOF
-
-chown -R named:named "$ZONEDIR" /etc/bind 2>/dev/null || true
-systemctl enable --now bind 2>/dev/null || systemctl enable --now named 2>/dev/null
-systemctl restart bind 2>/dev/null || systemctl restart named 2>/dev/null
-ok "DNS (BIND): прямая+обратная зоны, forwarder $DNS_FORWARDER_1"
-
-# локальный resolv на себя
-echo -e "search $DOMAIN\nnameserver $HQ_SRV_IP" > /etc/resolv.conf
-
-set_tz
-ok "HQ-SRV готов. Проверь: dig hq-srv.$DOMAIN @$HQ_SRV_IP"
+cat > /var/lib/bind/etc/zone/200.168.192.in-addr.arpa << 'EOF'
+$TTL    1D
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                        2026060200      ; serial
+                        12H             ; refresh
+                        1H              ; retry
+                        1W              ; expire
+                        1H              ; ncache
+                        )
+        IN      NS      au-team.irpo.
+1       IN      PTR     hq-rtr.au-team.irpo.
+2       IN      PTR     hq-cli.au-team.irpo.
+EOF
+rndc-confgen > /var/lib/bind/etc/rndc.key
+sed -i '6,$d' /var/lib/bind/etc/rndc.key
+chown -R root:named /var/lib/bind/etc/zone/*
+chmod 640 /var/lib/bind/etc/zone/au-team.irpo
+chmod 640 /var/lib/bind/etc/zone/100.168.192.in-addr.arpa
+chmod 640 /var/lib/bind/etc/zone/200.168.192.in-addr.arpa
+named-checkconf && named-checkconf -z
+systemctl enable --now bind.service
+cat > /etc/resolv.conf.head << EOF
+search au-team.irpo
+nameserver 192.168.100.2
+EOF
+cat > /etc/resolv.conf << EOF
+search au-team.irpo
+nameserver 192.168.100.2
+EOF
+useradd -m -u 2026 sshuser 2>/dev/null || log_warn "User may exist"
+echo 'sshuser:P@ssw0rd' | chpasswd
+usermod -a -G wheel sshuser
+sed -i 's/^#WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/' /etc/sudoers
+sed -i 's/^# WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/' /etc/sudoers
+sed -i 's/^#Port 22/Port 2026/' /etc/openssh/sshd_config
+sed -i 's/^Port 22/Port 2026/' /etc/openssh/sshd_config
+grep -q "^AllowUsers" /etc/openssh/sshd_config || echo "AllowUsers sshuser" >> /etc/openssh/sshd_config
+grep -q "^MaxAuthTries" /etc/openssh/sshd_config || echo "MaxAuthTries 2" >> /etc/openssh/sshd_config
+grep -q "^Banner" /etc/openssh/sshd_config || echo "Banner /etc/openssh/banner" >> /etc/openssh/sshd_config
+cat > /etc/openssh/banner << 'BANNER_EOF'
+Authorized access only
+BANNER_EOF
+systemctl restart sshd
+echo "=== Verification ==="
+hostnamectl
+ip -4 addr show ens19 2>/dev/null | grep -q "192.168.100.2" && log_info "IP 192.168.100.2: OK (VLAN 100 в Proxmox)" || log_error "IP: FAILED"
+id sshuser && log_info "User: OK" || log_error "User: FAILED"
+systemctl is-active bind.service > /dev/null && log_info "BIND: OK" || log_error "BIND: FAILED"
+systemctl is-active sshd > /dev/null && log_info "SSH: OK" || log_error "SSH: FAILED"
+echo "=== HQ-SRV Complete! ==="

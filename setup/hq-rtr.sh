@@ -1,103 +1,172 @@
-#!/usr/bin/env bash
-# ═══ HQ-RTR — router-on-a-stick (VLAN 100/200/999), NAT, GRE+OSPF, DHCP ═══
-set -u
-DIR="$(cd "$(dirname "$0")" && pwd)"
-. "$DIR/../config.env"; . "$DIR/lib.sh"; need_root
-
-set_hostname "hq-rtr.$DOMAIN"
-
-# Задача 3: пользователь net_admin
-make_sudoer "$NET_USER" "" "$USER_PASS"
-
-# Линк к ISP
-ip addr flush dev "$IF_EXT" 2>/dev/null
-ip addr add "$HQ_ISP_IP/$HQ_ISP_PFX" dev "$IF_EXT"; ip link set "$IF_EXT" up
-ip route replace default via "$ISP_HQ_IP" 2>/dev/null
-ok "HQ-RTR->ISP $HQ_ISP_IP/$HQ_ISP_PFX"
-etcnet_eth_static "$IF_EXT" "$HQ_ISP_IP/$HQ_ISP_PFX" "$ISP_HQ_IP"
-etcnet_eth_trunk "$IF_INT"
-
-enable_forward
-
-# Задача 4: router-on-a-stick — VLAN-сабинтерфейсы на ОДНОМ физ. интерфейсе ($IF_INT)
-ip link set "$IF_INT" up
-modprobe 8021q 2>/dev/null
-for v in "$VL100_ID:$VL100_RTR:$VL100_PFX" "$VL200_ID:$VL200_RTR:$VL200_PFX" "$VL999_ID:$VL999_RTR:$VL999_PFX"; do
-  id="${v%%:*}"; rest="${v#*:}"; rtr="${rest%%:*}"; pfx="${rest##*:}"
-  ip link del "$IF_INT.$id" 2>/dev/null
-  ip link add link "$IF_INT" name "$IF_INT.$id" type vlan id "$id"
-  ip addr add "$rtr/$pfx" dev "$IF_INT.$id"
-  ip link set "$IF_INT.$id" up
-  etcnet_vlan "$IF_INT" "$id" "$rtr/$pfx"
-  ok "VLAN $id -> $rtr/$pfx ($IF_INT.$id)"
-done
-
-# Задача 8: NAT для офиса в сторону ISP
-iptables -t nat -F POSTROUTING
-iptables -t nat -A POSTROUTING -o "$IF_EXT" -j MASQUERADE
-iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
-ok "NAT через $IF_EXT"
-
-# Задача 6: IP-туннель (GRE/IPIP) до BR-RTR
-ip tunnel del tun1 2>/dev/null; ip link del tun1 2>/dev/null
-ip tunnel add tun1 mode "$TUN_TYPE" local "$HQ_ISP_IP" remote "$BR_ISP_IP"
-ip addr add "$TUN_HQ_IP/$TUN_PFX" dev tun1
-ip link set tun1 up
-ok "Туннель ($TUN_TYPE) tun1 $TUN_HQ_IP/$TUN_PFX -> $TUN_BR_IP"
-etcnet_tunnel tun1 "$TUN_TYPE" "$HQ_ISP_IP" "$BR_ISP_IP" "$TUN_HQ_IP/$TUN_PFX" "$IF_EXT"
-etcnet_enable
-
-# Задача 7: OSPF (FRR) только на туннеле + парольная защита
-pkg frr
-sed -i 's/^ospfd=no/ospfd=yes/; s/^zebra=no/zebra=yes/' /etc/frr/daemons 2>/dev/null
-grep -q '^ospfd=yes' /etc/frr/daemons 2>/dev/null || echo "ospfd=yes" >> /etc/frr/daemons
-cat > /etc/frr/frr.conf <<EOF
-frr defaults traditional
-hostname hq-rtr
-!
-interface tun1
- ip ospf authentication message-digest
- ip ospf message-digest-key $OSPF_KEY_ID md5 $OSPF_PASS
-!
-router ospf
- ospf router-id $TUN_HQ_IP
- area $OSPF_AREA authentication message-digest
- passive-interface default
- no passive-interface tun1
- network $TUN_HQ_IP/$TUN_PFX area $OSPF_AREA
- network $VL100_RTR/$VL100_PFX area $OSPF_AREA
- network $VL200_RTR/$VL200_PFX area $OSPF_AREA
- network $VL999_RTR/$VL999_PFX area $OSPF_AREA
-!
-line vty
+#!/bin/bash
+# =============================================================================
+# HQ-RTR Setup Script - ALT Linux (etcnet)
+# DEMO-2026 Network Automation | Session: 3b9ac6ea
+# Generated: 2026-06-02 17:35:00
+# =============================================================================
+set -e
+TZ_REGION="${TZ_REGION:-Europe/Moscow}"   # часовой пояс (Йошкар-Ола). Замени при необходимости.
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
+[[ $EUID -ne 0 ]] && { log_error "Run as root!"; exit 1; }
+echo "=============================================="
+echo "       HQ-RTR Router Configuration"
+echo "=============================================="
+log_step "Setting hostname..."
+hostnamectl set-hostname hq-rtr.au-team.irpo
+log_step "Configuring WAN interface ens19..."
+mkdir -p /etc/net/ifaces/ens19
+cat > /etc/net/ifaces/ens19/options << 'EOF'
+TYPE=eth
+BOOTPROTO=static
+DISABLED=no
+NM_CONTROLLED=no
+SYSTEMD_CONTROLLED=no
+CONFIG_IPV4=yes
 EOF
-chown frr:frr /etc/frr/frr.conf 2>/dev/null
-systemctl enable --now frr 2>/dev/null && systemctl restart frr 2>/dev/null
-ok "OSPF поднят только на tun1 (MD5-пароль)"
-
-# Задача 9: DHCP-сервер для VLAN 200 (HQ-CLI), DNS=HQ-SRV, суффикс=домен, шлюз=HQ-RTR
-pkg dhcp-server
-CONF=/etc/dhcp/dhcpd.conf
-[ -f "$CONF" ] || CONF=/etc/dhcpd.conf
-mkdir -p "$(dirname "$CONF")"
-cat > "$CONF" <<EOF
-authoritative;
-option domain-name "$DOMAIN";
-option domain-name-servers $HQ_SRV_IP;
-default-lease-time 600;
-max-lease-time 7200;
-
-subnet $VL200_NET netmask $(ipcalc_mask) {
-  range $(dhcp_range);
-  option routers $VL200_RTR;          # шлюз = HQ-RTR
-  option domain-name-servers $HQ_SRV_IP;
-  option domain-name "$DOMAIN";
+echo "172.16.1.2/28" > /etc/net/ifaces/ens19/ipv4address
+echo "default via 172.16.1.1" > /etc/net/ifaces/ens19/ipv4route
+mkdir -p /etc/net/ifaces/ens20
+cat > /etc/net/ifaces/ens20/options << 'EOF'
+TYPE=eth
+BOOTPROTO=static
+DISABLED=no
+NM_CONTROLLED=no
+SYSTEMD_CONTROLLED=no
+EOF
+log_step "Configuring VLAN 100..."
+mkdir -p /etc/net/ifaces/ens20.100
+cat > /etc/net/ifaces/ens20.100/options << EOF
+TYPE=vlan
+HOST=ens20
+VID=100
+DISABLED=no
+BOOTPROTO=static
+ONBOOT=yes
+CONFIG_IPV4=yes
+EOF
+echo "192.168.100.1/27" > /etc/net/ifaces/ens20.100/ipv4address
+log_step "Configuring VLAN 200..."
+mkdir -p /etc/net/ifaces/ens20.200
+cat > /etc/net/ifaces/ens20.200/options << EOF
+TYPE=vlan
+HOST=ens20
+VID=200
+DISABLED=no
+BOOTPROTO=static
+ONBOOT=yes
+CONFIG_IPV4=yes
+EOF
+echo "192.168.200.1/28" > /etc/net/ifaces/ens20.200/ipv4address
+log_step "Configuring VLAN 999..."
+mkdir -p /etc/net/ifaces/ens20.999
+cat > /etc/net/ifaces/ens20.999/options << EOF
+TYPE=vlan
+HOST=ens20
+VID=999
+DISABLED=no
+BOOTPROTO=static
+ONBOOT=yes
+CONFIG_IPV4=yes
+EOF
+echo "192.168.99.1/29" > /etc/net/ifaces/ens20.999/ipv4address
+grep -q "^net.ipv4.ip_forward" /etc/net/sysctl.conf && \
+    sed -i 's/^net.ipv4.ip_forward.*/net.ipv4.ip_forward = 1/' /etc/net/sysctl.conf || \
+    echo "net.ipv4.ip_forward = 1" >> /etc/net/sysctl.conf
+sysctl -w net.ipv4.ip_forward=1 > /dev/null
+systemctl restart network && sleep 2
+cat > /etc/resolv.conf.head << 'EOF'
+nameserver 77.88.8.8
+nameserver 8.8.8.8
+EOF
+cat > /etc/resolv.conf << 'EOF'
+nameserver 77.88.8.8
+nameserver 8.8.8.8
+EOF
+ping -c 2 -W 3 77.88.8.8 > /dev/null 2>&1 && log_info "Internet: OK" || { log_error "No internet!"; exit 1; }
+apt-get update
+apt-get install -y iptables frr dhcp-server vim tzdata sudo
+timedatectl set-timezone ${TZ_REGION:-Europe/Moscow}
+useradd -m net_admin 2>/dev/null || log_warn "User net_admin may already exist"
+echo 'net_admin:P@ssw0rd' | chpasswd
+usermod -a -G wheel net_admin
+sed -i 's/^#WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/' /etc/sudoers
+sed -i 's/^# WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL/' /etc/sudoers
+iptables -t nat -F POSTROUTING 2>/dev/null || true
+iptables -t nat -A POSTROUTING -o ens19 -s 192.168.100.0/27 -j MASQUERADE
+iptables -t nat -A POSTROUTING -o ens19 -s 192.168.200.0/28 -j MASQUERADE
+mkdir -p /etc/sysconfig
+iptables-save > /etc/sysconfig/iptables
+systemctl enable --now iptables 2>/dev/null || true
+mkdir -p /etc/net/ifaces/gre1
+cat > /etc/net/ifaces/gre1/options << EOF
+TYPE=iptun
+TUNTYPE=gre
+TUNLOCAL=172.16.1.2
+TUNREMOTE=172.16.2.2
+TUNOPTIONS='ttl 64'
+HOST=ens19
+BOOTPROTO=static
+DISABLED=no
+CONFIG_IPV4=yes
+EOF
+echo "10.10.10.1/30" > /etc/net/ifaces/gre1/ipv4address
+sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
+sed -i 's/^#ospfd=no/ospfd=yes/' /etc/frr/daemons
+systemctl enable frr && systemctl restart frr && sleep 2
+vtysh << 'VTYSH_EOF'
+configure terminal
+router ospf
+  passive-interface default
+  network 10.10.10.0/30 area 0
+  network 192.168.100.0/27 area 0
+  network 192.168.200.0/28 area 0
+  area 0 authentication
+exit
+interface gre1
+  no ip ospf passive
+  ip ospf authentication-key 1245
+exit
+do write
+end
+VTYSH_EOF
+cat > /etc/dhcp/dhcpd.conf << EOF
+ddns-update-style none;
+subnet 192.168.200.0 netmask 255.255.255.240
+{
+    option routers                  192.168.200.1;
+    option subnet-mask              255.255.255.240;
+    option domain-name-servers      192.168.100.2;
+    option domain-name              "au-team.irpo";
+    range dynamic-bootp             192.168.200.2 192.168.200.14;
+    default-lease-time              21600;
+    max-lease-time                  43200;
 }
 EOF
-# адрес роутера исключён, т.к. не входит в range (range начинается с .2)
-echo "INTERFACES=\"$IF_INT.$VL200_ID\"" > /etc/sysconfig/dhcpd 2>/dev/null || true
-systemctl enable --now dhcpd 2>/dev/null && systemctl restart dhcpd 2>/dev/null
-ok "DHCP для VLAN200 на $IF_INT.$VL200_ID"
-
-set_tz
-ok "HQ-RTR готов."
+echo "DHCPDARGS=ens20.200" > /etc/sysconfig/dhcpd
+systemctl enable dhcpd
+systemctl restart network && sleep 3
+systemctl restart frr && sleep 2
+cat > /etc/resolv.conf.head << EOF
+search au-team.irpo
+nameserver 192.168.100.2
+EOF
+cat > /etc/resolv.conf << EOF
+search au-team.irpo
+nameserver 192.168.100.2
+EOF
+systemctl restart dhcpd || log_warn "DHCP may need VLAN interface"
+echo "=== Verification ==="
+hostnamectl
+id net_admin && log_info "net_admin: OK" || log_error "net_admin: FAILED"
+ip -4 addr show ens19 2>/dev/null | grep -q "172.16.1.2" && log_info "WAN: OK" || log_error "WAN: FAILED"
+ip -4 addr show ens20.100 2>/dev/null | grep -q "192.168.100.1" && log_info "VLAN 100: OK" || log_error "VLAN 100: FAILED"
+ip -4 addr show ens20.200 2>/dev/null | grep -q "192.168.200.1" && log_info "VLAN 200: OK" || log_error "VLAN 200: FAILED"
+ip -4 addr show ens20.999 2>/dev/null | grep -q "192.168.99.1" && log_info "VLAN 999: OK" || log_error "VLAN 999: FAILED"
+ip -4 addr show gre1 2>/dev/null | grep -q "10.10.10.1" && log_info "GRE: OK" || log_warn "GRE: waiting"
+systemctl is-active frr > /dev/null && log_info "FRR: OK" || log_error "FRR: FAILED"
+systemctl is-active dhcpd > /dev/null && log_info "DHCP: OK" || log_warn "DHCP: check"
+echo "=== HQ-RTR Complete! ==="
