@@ -4,7 +4,8 @@
 # DEMO-2026 Network Automation | Session: 3b9ac6ea
 # Generated: 2026-06-02 17:34:36
 # =============================================================================
-set -e
+set +e
+export PATH=$PATH:/sbin:/usr/sbin
 TZ_REGION="${TZ_REGION:-Europe/Moscow}"   # часовой пояс (Йошкар-Ола). Замени при необходимости.
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -63,7 +64,7 @@ mkdir -p /etc/sysconfig
 iptables-save > /etc/sysconfig/iptables
 systemctl enable --now iptables 2>/dev/null || true
 apt-get install -y tzdata 2>/dev/null || true
-timedatectl set-timezone ${TZ_REGION:-Europe/Moscow}
+ln -sf /usr/share/zoneinfo/${TZ_REGION:-Europe/Moscow} /etc/localtime 2>/dev/null || timedatectl set-timezone ${TZ_REGION:-Europe/Moscow} 2>/dev/null || true
 systemctl restart network
 sleep 3
 echo "=== Verification ==="

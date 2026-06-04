@@ -129,7 +129,8 @@ def derive(c):
 
 HEADER = """#!/bin/bash
 # {title} - ALT Linux (etcnet) | DEMO-2026 (сгенерировано generate.py)
-set -e
+set +e
+export PATH=$PATH:/sbin:/usr/sbin
 TZ_REGION="${{TZ_REGION:-{tz}}}"
 RED='\\033[0;31m'; GREEN='\\033[0;32m'; YELLOW='\\033[1;33m'; BLUE='\\033[0;34m'; NC='\\033[0m'
 log_info() {{ echo -e "${{GREEN}}[INFO]${{NC}} $1"; }}
@@ -200,13 +201,13 @@ def gen_isp(d):
     s += eth_static(d["isp_if_hq"], f'{d["isp_hq_ip"]}/{d["isp_hq_pfx"]}')
     s += eth_static(d["isp_if_br"], f'{d["isp_br_ip"]}/{d["isp_br_pfx"]}')
     s += FWD_ON
-    s += "apt-get update && apt-get install -y iptables vim tzdata || true\n"
+    s += "apt-get update && apt-get install -y iptables vim-console tzdata || true\n"
     s += f"""iptables -t nat -F POSTROUTING 2>/dev/null || true
 iptables -t nat -A POSTROUTING -s {d['isp_hq_net']} -o {d['isp_if_wan']} -j MASQUERADE
 iptables -t nat -A POSTROUTING -s {d['isp_br_net']} -o {d['isp_if_wan']} -j MASQUERADE
 mkdir -p /etc/sysconfig && iptables-save > /etc/sysconfig/iptables
 systemctl enable --now iptables 2>/dev/null || true
-timedatectl set-timezone ${{TZ_REGION}}
+ln -sf /usr/share/zoneinfo/${{TZ_REGION}} /etc/localtime 2>/dev/null || timedatectl set-timezone ${{TZ_REGION}} 2>/dev/null || true
 systemctl restart network && sleep 3
 ping -c2 -W2 {d['dns_fwd']} >/dev/null 2>&1 && log_info "Internet OK" || log_warn "no internet"
 echo "=== ISP done ==="
@@ -250,8 +251,8 @@ nameserver {d['dns_fwd']}
 EOF
 ping -c2 -W3 {d['dns_fwd']} >/dev/null 2>&1 && log_info "Internet OK" || {{ log_error "no internet"; exit 1; }}
 apt-get update
-apt-get install -y iptables frr dhcp-server vim tzdata sudo
-timedatectl set-timezone ${{TZ_REGION}}
+apt-get install -y iptables frr dhcp-server vim-console tzdata sudo
+ln -sf /usr/share/zoneinfo/${{TZ_REGION}} /etc/localtime 2>/dev/null || timedatectl set-timezone ${{TZ_REGION}} 2>/dev/null || true
 """
     s += sudoer(d["net_user"]).replace("{password}", d["password"])
     s += f"""iptables -t nat -F POSTROUTING 2>/dev/null || true
@@ -328,8 +329,8 @@ nameserver {d['dns_fwd']}
 EOF
 ping -c2 -W3 {d['dns_fwd']} >/dev/null 2>&1 && log_info "Internet OK" || {{ log_error "no internet"; exit 1; }}
 apt-get update
-apt-get install -y iptables frr vim tzdata sudo
-timedatectl set-timezone ${{TZ_REGION}}
+apt-get install -y iptables frr vim-console tzdata sudo
+ln -sf /usr/share/zoneinfo/${{TZ_REGION}} /etc/localtime 2>/dev/null || timedatectl set-timezone ${{TZ_REGION}} 2>/dev/null || true
 """
     s += sudoer(d["net_user"]).replace("{password}", d["password"])
     s += f"""iptables -t nat -F POSTROUTING 2>/dev/null || true
@@ -384,8 +385,8 @@ def gen_hqsrv(d):
 cat > /etc/resolv.conf << 'EOF'
 nameserver {d['dns_fwd']}
 EOF
-apt-get update && apt-get install -y bind bind-utils vim tzdata sudo
-timedatectl set-timezone ${{TZ_REGION}}
+apt-get update && apt-get install -y bind bind-utils vim-console tzdata sudo
+ln -sf /usr/share/zoneinfo/${{TZ_REGION}} /etc/localtime 2>/dev/null || timedatectl set-timezone ${{TZ_REGION}} 2>/dev/null || true
 cat > /var/lib/bind/etc/options.conf << 'EOF'
 options {{
     version "unknown";
@@ -460,8 +461,8 @@ search {d['domain']}
 nameserver {d['hq_srv_ip']}
 EOF
 apt-get update || true
-apt-get install -y vim tzdata sudo || true
-timedatectl set-timezone ${{TZ_REGION}}
+apt-get install -y vim-console tzdata sudo || true
+ln -sf /usr/share/zoneinfo/${{TZ_REGION}} /etc/localtime 2>/dev/null || timedatectl set-timezone ${{TZ_REGION}} 2>/dev/null || true
 """
     s += sudoer(d["ssh_user"], d["ssh_uid"]).replace("{password}", d["password"])
     s += ssh_hardening(d)
@@ -483,8 +484,8 @@ search {d['domain']}
 nameserver {d['hq_srv_ip']}
 EOF
 apt-get update || true
-apt-get install -y vim tzdata || true
-timedatectl set-timezone ${{TZ_REGION}}
+apt-get install -y vim-console tzdata || true
+ln -sf /usr/share/zoneinfo/${{TZ_REGION}} /etc/localtime 2>/dev/null || timedatectl set-timezone ${{TZ_REGION}} 2>/dev/null || true
 ip -4 addr show {d['srv_if']} | grep -q "inet " && log_info "DHCP OK" || log_error "DHCP FAILED"
 echo "=== HQ-CLI done ==="
 """

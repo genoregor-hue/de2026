@@ -4,7 +4,8 @@
 # DEMO-2026 | Session: 3b9ac6ea
 # Generated: 2026-06-02 17:35:11
 # =============================================================================
-set -e
+set +e
+export PATH=$PATH:/sbin:/usr/sbin
 TZ_REGION="${TZ_REGION:-Europe/Moscow}"   # часовой пояс (Йошкар-Ола). Замени при необходимости.
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -33,8 +34,8 @@ systemctl restart network && sleep 2
 cat > /etc/resolv.conf << 'EOF'
 nameserver 77.88.8.8
 EOF
-apt-get update && apt-get install -y bind bind-utils vim tzdata sudo
-timedatectl set-timezone ${TZ_REGION:-Europe/Moscow}
+apt-get update && apt-get install -y bind bind-utils vim-console tzdata sudo
+ln -sf /usr/share/zoneinfo/${TZ_REGION:-Europe/Moscow} /etc/localtime 2>/dev/null || timedatectl set-timezone ${TZ_REGION:-Europe/Moscow} 2>/dev/null || true
 cat > /var/lib/bind/etc/options.conf << 'EOF'
 options {
     version "unknown";
